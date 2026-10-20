@@ -1,133 +1,150 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+NEW SKETCH
 
-#define FLOW_SENSOR_PIN 3
-
-#define GREEN_LED 8
-#define YELLOW_LED 9
-#define RED_LED 10
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
+// -------- PIN DEFINITIONS --------
+int flowPin = 2;
+int pressurePin = A1;
+
+int greenLED = 8;
+int yellowLED = 9;
+int redLED = 10;
+
+// -------- FLOW SENSOR VARIABLES --------
 volatile int pulseCount = 0;
+float flowRate = 0;
+unsigned long lastFlowTime = 0;
 
-int pulsesPerSecond = 0;
-float flowRate = 0.0;
+// -------- FILTERING --------
+float flowFiltered = 0;
+float pressureFiltered = 0;
 
-//Sliding window variables
-float flowHistory[10];
-int index = 0;
-int count = 0;
-float avgFlow = 0.0;
+// -------- BASELINE --------
+float baseFlow = 0;
+float basePressure = 0;
+int sampleCount = 0;
+bool baselineReady = false;
 
-// For fluctuation detection
-float lastFlow = 0;
+// -------- TIMING --------
+unsigned long lastReadTime = 0;
 
-void pulseCounter() {
+// -------- INTERRUPT --------
+void countPulse() {
   pulseCount++;
 }
 
+// -------- CLASSIFICATION FUNCTION --------
+String classify(float flow, float pressure, float baseFlow, float basePressure) {
+
+  if (flow < baseFlow * 0.3 && pressure > basePressure * 1.3) {
+    return "BLOCKAGE";
+  }
+  else if (flow < baseFlow * 0.5 && pressure < basePressure * 0.7) {
+    return "LEAK";
+  }
+  else if (abs(flow - baseFlow) > 50 && abs(pressure - basePressure) > 50) {
+    return "AIR BUBBLE";
+  }
+  else {
+    return "NORMAL";
+  }
+}
+
+// -------- SETUP --------
 void setup() {
-  pinMode(FLOW_SENSOR_PIN, INPUT_PULLUP);
-
-  pinMode(GREEN_LED, OUTPUT);
-  pinMode(YELLOW_LED, OUTPUT);
-  pinMode(RED_LED, OUTPUT);
-
-  attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN), pulseCounter, RISING);
 
   Serial.begin(9600);
+
+  pinMode(flowPin, INPUT);
+  attachInterrupt(digitalPinToInterrupt(flowPin), countPulse, RISING);
+
+  pinMode(greenLED, OUTPUT);
+  pinMode(yellowLED, OUTPUT);
+  pinMode(redLED, OUTPUT);
 
   lcd.init();
   lcd.backlight();
 
-  lcd.setCursor(0, 0);
-  lcd.print("Flow Monitor");
-  lcd.setCursor(0, 1);
-  lcd.print("Starting...");
-  delay(2000);
-  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Initializing...");
 }
 
+// -------- LOOP --------
 void loop() {
-  pulseCount = 0;
-  delay(1000);
 
-  pulsesPerSecond = pulseCount;
-  flowRate = pulsesPerSecond / 7.5;
+  // -------- FLOW CALCULATION (every 1 sec) --------
+  if (millis() - lastFlowTime >= 1000) {
+    flowRate = pulseCount / 7.5;  // calibration factor
+    pulseCount = 0;
+    lastFlowTime = millis();
+  }
 
-  // Only consider valid flow (>1 L/min approx)
-  if (flowRate > 1.0) {
+  // -------- PRESSURE READING --------
+  int pressureRaw = analogRead(pressurePin);
 
-    flowHistory[index] = flowRate;
-    index = (index + 1) % 10;
+  // -------- SIMPLE FILTER --------
+  flowFiltered = (flowFiltered * 0.7) + (flowRate * 0.3);
+  pressureFiltered = (pressureFiltered * 0.7) + (pressureRaw * 0.3);
 
-    if (count < 10) count++;
+  // -------- BASELINE LEARNING --------
+  if (!baselineReady) {
+    baseFlow += flowFiltered;
+    basePressure += pressureFiltered;
+    sampleCount++;
 
-    // Calculate moving average
-    avgFlow = 0;
-    for (int i = 0; i < count; i++) {
-      avgFlow += flowHistory[i];
+    lcd.setCursor(0,0);
+    lcd.print("Learning...");
+    lcd.setCursor(0,1);
+    lcd.print(sampleCount);
+
+    if (sampleCount >= 50) {
+      baseFlow /= sampleCount;
+      basePressure /= sampleCount;
+      baselineReady = true;
+      lcd.clear();
     }
-    avgFlow /= count;
+
+    delay(100);
+    return;
   }
 
-  String status = "";
+  // -------- CLASSIFICATION --------
+  String status = classify(flowFiltered, pressureFiltered, baseFlow, basePressure);
 
-  // Reset LEDs
-  digitalWrite(GREEN_LED, LOW);
-  digitalWrite(YELLOW_LED, LOW);
-  digitalWrite(RED_LED, LOW);
-
-  // LEARNING FIRST (priority fix)
-  if (count < 10) {
-    status = "LEARNING";
+  // -------- LED CONTROL --------
+  if (status == "BLOCKAGE" || status == "AIR BUBBLE") {
+    digitalWrite(redLED, HIGH);
+    digitalWrite(yellowLED, LOW);
+    digitalWrite(greenLED, LOW);
   }
-
-  // BLOCKAGE
-  else if (flowRate < 0.1) {
-    status = "BLOCKAGE";
-    digitalWrite(RED_LED, HIGH);
+  else if (status == "LEAK") {
+    digitalWrite(redLED, LOW);
+    digitalWrite(yellowLED, HIGH);
+    digitalWrite(greenLED, LOW);
   }
-
-  // AIR BUBBLE
-  else if (abs(flowRate - lastFlow) > 3) {
-    status = "AIR BUBBLE";
-    digitalWrite(RED_LED, HIGH);
-  }
-
-  // LEAKAGE
-  else if (flowRate < 0.6 * avgFlow) {
-    status = "LEAKAGE";
-    digitalWrite(YELLOW_LED, HIGH);
-  }
-
-  // NORMAL
   else {
-    status = "NORMAL";
-    digitalWrite(GREEN_LED, HIGH);
+    digitalWrite(redLED, LOW);
+    digitalWrite(yellowLED, LOW);
+    digitalWrite(greenLED, HIGH);
   }
 
-  lastFlow = flowRate;
-
-  // Send to ESP32
-  Serial.println(status);
-
-  // LCD Display
-  lcd.clear();
-
-  lcd.setCursor(0, 0);
+  // -------- LCD DISPLAY --------
+  lcd.setCursor(0,0);
   lcd.print("F:");
-  lcd.print(flowRate, 1);
-  lcd.print(" A:");
-  lcd.print(avgFlow, 1);
+  lcd.print(flowFiltered);
+  lcd.print(" ");
 
-  lcd.setCursor(0, 1);
+  lcd.setCursor(0,1);
   lcd.print(status);
+  lcd.print("      ");
 
-  // Optional: show learning progress
-  if (status == "LEARNING") {
-    lcd.setCursor(10, 1);
-    lcd.print(count);
-  }
+  // -------- SERIAL PLOTTER OUTPUT --------
+  Serial.print(flowFiltered);
+  Serial.print(",");
+  Serial.println(pressureFiltered);
+
+  delay(200);
 }
