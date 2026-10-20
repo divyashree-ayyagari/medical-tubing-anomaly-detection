@@ -42,7 +42,7 @@ The system uses a moving-average filter to smooth sensor readings and displays t
 
 ### Hardware Setup
 
-![Hardware Setup]
+Hardware Setup
 <img width="960" height="1280" alt="WhatsApp Image 2026-10-20 at 8 10 08 PM" src="https://github.com/user-attachments/assets/592b1286-32d1-45a1-8e38-1fde297e4328" />
 
 The prototype integrates the flow sensor, microcontrollers, LCD, and LED indicators.
